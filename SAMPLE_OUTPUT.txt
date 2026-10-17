@@ -1,0 +1,441 @@
+
+
+########## 1. JOB CREATION + INPUT VALIDATION ##########
+
+$ python3 jobsched.py add hello --cmd 'echo Hello from the scheduler' --desc 'first job' --priority 5
+added job #1 'hello' (priority 5, manual)
+
+$ python3 jobsched.py add hello --cmd 'echo duplicate'
+error: job 'hello' already exists
+
+$ python3 jobsched.py add 'bad name' --cmd 'echo x'
+error: invalid job name 'bad name': use 1-64 letters, digits, '_', '.' or '-' (must start with a letter or digit)
+
+$ python3 jobsched.py add broken --cmd 'echo x' --cron '61 * * * *'
+error: cron minute: '61' is outside the allowed range 0-59
+
+$ python3 jobsched.py list
+ID  NAME   STATE    PRI  SCHEDULE  NEXT RUN  LAST  DESCRIPTION
+--  -----  -------  ---  --------  --------  ----  -----------
+1   hello  pending  5    manual    -         -     first job
+
+
+########## 2. FCFS SCHEDULING  (jobs queued A, B, C -> run in that order) ##########
+
+$ python3 jobsched.py add job-A --cmd 'echo A; sleep 1' --priority 5
+added job #2 'job-A' (priority 5, manual)
+
+$ python3 jobsched.py add job-B --cmd 'echo B; sleep 1' --priority 1
+added job #3 'job-B' (priority 1, manual)
+
+$ python3 jobsched.py add job-C --cmd 'echo C; sleep 1' --priority 3
+added job #4 'job-C' (priority 3, manual)
+
+$ python3 jobsched.py start --algorithm fcfs --until-idle --tick 0.1
+Starting scheduler (Ctrl+C to stop gracefully)...
+[04:29:42] scheduler started: FCFS (first-come first-served, non-preemptive) | workers=1
+[04:29:42] START   'job-A' (id 2, priority 5) pid 681, attempt 1
+[04:29:43] SUCCESS 'job-A' exit code 0 after 1.01s (active 1.01s, preemptions 0)
+[04:29:43] START   'job-B' (id 3, priority 1) pid 683, attempt 1
+[04:29:44] SUCCESS 'job-B' exit code 0 after 1.01s (active 1.01s, preemptions 0)
+[04:29:44] START   'job-C' (id 4, priority 3) pid 685, attempt 1
+[04:29:45] SUCCESS 'job-C' exit code 0 after 1.01s (active 1.01s, preemptions 0)
+[04:29:45] no more work: scheduler is idle, exiting
+
+
+########## 3. PRIORITY SCHEDULING  (same jobs: B(1) -> C(3) -> A(5)) ##########
+
+$ python3 jobsched.py start --algorithm priority --until-idle --tick 0.1
+Starting scheduler (Ctrl+C to stop gracefully)...
+[04:29:45] scheduler started: PRIORITY (1 = highest, non-preemptive) | workers=1
+[04:29:45] START   'job-B' (id 3, priority 1) pid 691, attempt 1
+[04:29:46] SUCCESS 'job-B' exit code 0 after 1.01s (active 1.01s, preemptions 0)
+[04:29:46] START   'job-C' (id 4, priority 3) pid 693, attempt 1
+[04:29:47] SUCCESS 'job-C' exit code 0 after 1.01s (active 1.01s, preemptions 0)
+[04:29:47] START   'job-A' (id 2, priority 5) pid 695, attempt 1
+[04:29:48] SUCCESS 'job-A' exit code 0 after 1.01s (active 1.01s, preemptions 0)
+[04:29:48] no more work: scheduler is idle, exiting
+
+
+########## 4. ROUND ROBIN  (two CPU-bound jobs, 1s quantum: SIGSTOP / SIGCONT time slicing) ##########
+
+$ python3 jobsched.py add rr-X --cmd 'python3 ~/linux-job-scheduler/examples/scripts/cpu_burn.py 2 X'
+added job #5 'rr-X' (priority 5, manual)
+
+$ python3 jobsched.py add rr-Y --cmd 'python3 ~/linux-job-scheduler/examples/scripts/cpu_burn.py 2 Y'
+added job #6 'rr-Y' (priority 5, manual)
+
+$ python3 jobsched.py start --algorithm rr --quantum 1 --until-idle --tick 0.1
+Starting scheduler (Ctrl+C to stop gracefully)...
+[04:29:48] scheduler started: ROUND ROBIN (time quantum 1s, preemptive) | workers=1
+[04:29:48] START   'rr-X' (id 5, priority 5) pid 702, attempt 1
+[04:29:49] PREEMPT 'rr-X' used its 1s quantum -> SIGSTOP, back of the ready queue
+[04:29:50] START   'rr-Y' (id 6, priority 5) pid 704, attempt 1
+[04:29:51] PREEMPT 'rr-Y' used its 1s quantum -> SIGSTOP, back of the ready queue
+[04:29:51] CONTINUE 'rr-X' (pid 702) resumed with SIGCONT
+[04:29:52] PREEMPT 'rr-X' used its 1s quantum -> SIGSTOP, back of the ready queue
+[04:29:52] CONTINUE 'rr-Y' (pid 704) resumed with SIGCONT
+[04:29:53] PREEMPT 'rr-Y' used its 1s quantum -> SIGSTOP, back of the ready queue
+[04:29:53] CONTINUE 'rr-X' (pid 702) resumed with SIGCONT
+[04:29:53] SUCCESS 'rr-X' exit code 0 after 4.15s (active 2.12s, preemptions 2)
+[04:29:53] CONTINUE 'rr-Y' (pid 704) resumed with SIGCONT
+[04:29:53] SUCCESS 'rr-Y' exit code 0 after 3.23s (active 2.13s, preemptions 2)
+[04:29:53] no more work: scheduler is idle, exiting
+
+
+########## 5. DEPENDENCIES  (queued deploy, test, build -> runs build, test, deploy) ##########
+
+$ python3 jobsched.py add build --cmd 'echo compiling...; sleep 1'
+added job #7 'build' (priority 5, manual)
+
+$ python3 jobsched.py add test --cmd 'echo running tests; sleep 1' --depends-on build
+added job #8 'test' (priority 5, manual)
+
+$ python3 jobsched.py add deploy --cmd 'echo deploying' --depends-on test
+added job #9 'deploy' (priority 5, manual)
+
+$ python3 jobsched.py start --until-idle --tick 0.1
+Starting scheduler (Ctrl+C to stop gracefully)...
+[04:29:53] scheduler started: FCFS (first-come first-served, non-preemptive) | workers=1
+[04:29:53] START   'build' (id 7, priority 5) pid 713, attempt 1
+[04:29:54] SUCCESS 'build' exit code 0 after 1.01s (active 1.01s, preemptions 0)
+[04:29:54] START   'test' (id 8, priority 5) pid 715, attempt 1
+[04:29:55] SUCCESS 'test' exit code 0 after 1.01s (active 1.01s, preemptions 0)
+[04:29:55] START   'deploy' (id 9, priority 5) pid 717, attempt 1
+[04:29:55] SUCCESS 'deploy' exit code 0 after 0.11s (active 0.11s, preemptions 0)
+[04:29:55] no more work: scheduler is idle, exiting
+
+
+########## 6. FAILURE CASCADE  (prerequisite fails -> dependents are skipped) ##########
+
+$ python3 jobsched.py add fetch-data --cmd 'echo downloading; exit 7'
+added job #10 'fetch-data' (priority 5, manual)
+
+$ python3 jobsched.py add process-data --cmd 'echo processing' --depends-on fetch-data
+added job #11 'process-data' (priority 5, manual)
+
+$ python3 jobsched.py add publish-data --cmd 'echo publishing' --depends-on process-data
+added job #12 'publish-data' (priority 5, manual)
+
+$ python3 jobsched.py start --until-idle --tick 0.1
+Starting scheduler (Ctrl+C to stop gracefully)...
+[04:29:56] scheduler started: FCFS (first-come first-served, non-preemptive) | workers=1
+[04:29:56] START   'fetch-data' (id 10, priority 5) pid 725, attempt 1
+[04:29:56] FAILED  'fetch-data' exit code 7 after 0.10s (active 0.10s, preemptions 0)
+[04:29:56] FAILURE REPORT: job 'fetch-data' -> failed (exit code 7 after 1 attempt(s))
+[04:29:56]    last output lines: downloading
+[04:29:56] SKIP    'process-data' - skipped: prerequisite job 'fetch-data' failed
+[04:29:56] FAILURE REPORT: job 'process-data' -> skipped (skipped: prerequisite job 'fetch-data' failed)
+[04:29:56] SKIP    'publish-data' - skipped: prerequisite job 'process-data' failed
+[04:29:56] FAILURE REPORT: job 'publish-data' -> skipped (skipped: prerequisite job 'process-data' failed)
+[04:29:56] no more work: scheduler is idle, exiting
+
+
+########## 7. RETRIES  (fails twice, succeeds on the 3rd attempt) ##########
+
+$ python3 jobsched.py add flaky --cmd 'sh ~/linux-job-scheduler/examples/scripts/flaky.sh 3 /tmp/jobsched_demo_flaky.count' --retries 3 --retry-delay 1
+added job #13 'flaky' (priority 5, manual)
+
+$ python3 jobsched.py execute flaky
+job 'flaky' queued for immediate execution
+hint: the scheduler is not running - start it with:  python3 jobsched.py start --until-idle
+
+$ python3 jobsched.py start --until-idle --tick 0.1
+Starting scheduler (Ctrl+C to stop gracefully)...
+[04:29:56] scheduler started: FCFS (first-come first-served, non-preemptive) | workers=1
+[04:29:56] START   'flaky' (id 13, priority 5) pid 730, attempt 1
+[04:29:56] FAILED  'flaky' exit code 1 after 0.11s (active 0.11s, preemptions 0)
+[04:29:56] RETRY   'flaky' will be retried (1 of 3) in 1s
+[04:29:57] START   'flaky' (id 13, priority 5) pid 732, attempt 2
+[04:29:57] FAILED  'flaky' exit code 1 after 0.11s (active 0.11s, preemptions 0)
+[04:29:57] RETRY   'flaky' will be retried (2 of 3) in 1s
+[04:29:58] START   'flaky' (id 13, priority 5) pid 735, attempt 3
+[04:29:58] SUCCESS 'flaky' exit code 0 after 0.11s (active 0.11s, preemptions 0)
+[04:29:58] no more work: scheduler is idle, exiting
+
+
+########## 8. EXECUTION TIMEOUT  (sleep 30 with a 2 second limit) ##########
+
+$ python3 jobsched.py add too-slow --cmd 'sleep 30' --timeout 2
+added job #14 'too-slow' (priority 5, manual)
+
+$ python3 jobsched.py execute too-slow
+job 'too-slow' queued for immediate execution
+hint: the scheduler is not running - start it with:  python3 jobsched.py start --until-idle
+
+$ python3 jobsched.py start --until-idle --tick 0.1
+Starting scheduler (Ctrl+C to stop gracefully)...
+[04:29:59] scheduler started: FCFS (first-come first-served, non-preemptive) | workers=1
+[04:29:59] START   'too-slow' (id 14, priority 5) pid 741, attempt 1
+[04:30:01] TIMEOUT 'too-slow' exceeded 2s - sending SIGTERM
+[04:30:01] TIMEOUT 'too-slow' exceeded timeout of 2s of run time after 2.11s (active 2.11s, preemptions 0)
+[04:30:01] FAILURE REPORT: job 'too-slow' -> timeout (exceeded timeout of 2s of run time after 1 attempt(s))
+[04:30:01] no more work: scheduler is idle, exiting
+
+
+########## 9. TIME-BASED AUTOMATION  (one-time --in 2s, periodic --every 3s, cron) ##########
+
+$ python3 jobsched.py add one-shot --cmd 'echo one-time job fired' --in 2s
+added job #15 'one-shot' (priority 5, once)
+
+$ python3 jobsched.py add heartbeat --cmd 'echo beat' --every 3s
+added job #16 'heartbeat' (priority 5, every 3s)
+
+$ python3 jobsched.py add nightly --cmd 'echo nightly' --cron '0 2 * * *'
+added job #17 'nightly' (priority 5, cron '0 2 * * *')
+
+$ python3 jobsched.py add weekdays --cmd 'echo standup' --cron '30 9 * * mon-fri'
+added job #18 'weekdays' (priority 5, cron '30 9 * * mon-fri')
+
+$ python3 jobsched.py start --duration 8 --tick 0.2
+Starting scheduler (Ctrl+C to stop gracefully)...
+[04:30:01] scheduler started: FCFS (first-come first-served, non-preemptive) | workers=1
+[04:30:01] START   'heartbeat' (id 16, priority 5) pid 748, attempt 1
+[04:30:01] SUCCESS 'heartbeat' exit code 0 after 0.21s (active 0.21s, preemptions 0)
+[04:30:03] START   'one-shot' (id 15, priority 5) pid 749, attempt 1
+[04:30:03] SUCCESS 'one-shot' exit code 0 after 0.21s (active 0.21s, preemptions 0)
+[04:30:04] START   'heartbeat' (id 16, priority 5) pid 750, attempt 1
+[04:30:04] SUCCESS 'heartbeat' exit code 0 after 0.21s (active 0.21s, preemptions 0)
+[04:30:07] START   'heartbeat' (id 16, priority 5) pid 751, attempt 1
+[04:30:07] SUCCESS 'heartbeat' exit code 0 after 0.21s (active 0.21s, preemptions 0)
+[04:30:09] time limit reached, shutting down
+
+
+########## 10. PAUSE / RESUME / KILL OF A RUNNING JOB  (SIGSTOP / SIGCONT / SIGTERM) ##########
+
+$ python3 jobsched.py add long-task --cmd 'for i in 1 2 3 4 5 6 7 8; do echo step $i; sleep 1; done'
+added job #19 'long-task' (priority 5, manual)
+
+$ python3 jobsched.py execute long-task
+job 'long-task' queued for immediate execution
+hint: the scheduler is not running - start it with:  python3 jobsched.py start --until-idle
+
+$ python3 jobsched.py pause long-task
+job 'long-task' paused - the scheduler will freeze its process with SIGSTOP
+
+$ python3 jobsched.py status
+==============================================================================
+ JOB SCHEDULER STATUS   2026-10-17 04:30:14   engine: RUNNING
+==============================================================================
+ pending 4 | running 0 | paused 1 | completed 10 | failed 4   (runs: 25 total, 18 ok, 6 failed)
+
+RUNNING (0)
+  (none)
+
+PENDING (4)
+  ID  NAME       PRI  SCHEDULE                 NEXT RUN                         LAST RESULT  RETRY
+  --  ---------  ---  -----------------------  -------------------------------  -----------  -----
+  1   hello      5    manual                   -                                -            0/0
+  16  heartbeat  5    every 3s                 2026-10-17 04:30:16 (in 2.20s)   success      0/0
+  17  nightly    5    cron '0 2 * * *'         2026-10-18 02:00:00 (in 21h29m)  -            0/0
+  18  weekdays   5    cron '30 9 * * mon-fri'  2026-10-19 09:30:00 (in 52h59m)  -            0/0
+
+PAUSED (1)
+  ID  NAME       PRI  SCHEDULE  NEXT RUN  LAST RESULT  RETRY
+  --  ---------  ---  --------  --------  -----------  -----
+  19  long-task  5    manual    -         -            0/0
+
+COMPLETED (10)
+  ID  NAME      PRI  SCHEDULE  NEXT RUN  LAST RESULT  RETRY
+  --  --------  ---  --------  --------  -----------  -----
+  2   job-A     5    manual    -         success      0/0
+  3   job-B     1    manual    -         success      0/0
+  4   job-C     3    manual    -         success      0/0
+  5   rr-X      5    manual    -         success      0/0
+  6   rr-Y      5    manual    -         success      0/0
+  7   build     5    manual    -         success      0/0
+  8   test      5    manual    -         success      0/0
+  9   deploy    5    manual    -         success      0/0
+  13  flaky     5    manual    -         success      0/3
+  15  one-shot  5    once      -         success      0/0
+
+FAILED (4)
+  ID  NAME          PRI  SCHEDULE  NEXT RUN  LAST RESULT  RETRY
+  --  ------------  ---  --------  --------  -----------  -----
+  10  fetch-data    5    manual    -         failed       0/0
+  11  process-data  5    manual    -         skipped      0/0
+  12  publish-data  5    manual    -         skipped      0/0
+  14  too-slow      5    manual    -         failed       0/0
+
+$ python3 jobsched.py resume long-task
+job 'long-task' resumed - its process continues with SIGCONT
+
+$ python3 jobsched.py kill long-task
+kill requested for 'long-task' - the scheduler sends SIGTERM, then SIGKILL after a grace period
+
+--- scheduler output ---
+Starting scheduler (Ctrl+C to stop gracefully)...
+[04:30:09] scheduler started: FCFS (first-come first-served, non-preemptive) | workers=1
+[04:30:09] START   'long-task' (id 19, priority 5) pid 756, attempt 1
+[04:30:12] PAUSE   'long-task' (pid 756) stopped with SIGSTOP
+[04:30:12] START   'heartbeat' (id 16, priority 5) pid 762, attempt 1
+[04:30:12] SUCCESS 'heartbeat' exit code 0 after 0.20s (active 0.20s, preemptions 0)
+[04:30:13] START   'heartbeat' (id 16, priority 5) pid 763, attempt 1
+[04:30:13] SUCCESS 'heartbeat' exit code 0 after 0.21s (active 0.21s, preemptions 0)
+[04:30:14] RESUME  'long-task' re-entered the ready queue
+[04:30:14] CONTINUE 'long-task' (pid 756) resumed with SIGCONT
+[04:30:15] kill requested for 'long-task' - terminating pid 756
+[04:30:15] KILLED  'long-task' terminated on request (killed) after 6.23s (active 4.21s, preemptions 0)
+[04:30:16] START   'heartbeat' (id 16, priority 5) pid 770, attempt 1
+[04:30:16] SUCCESS 'heartbeat' exit code 0 after 0.21s (active 0.21s, preemptions 0)
+[04:30:18] time limit reached, shutting down
+
+
+########## 11. EDIT, DELETE, SAMPLE AUTOMATION JOBS ##########
+
+$ python3 jobsched.py edit hello --priority 2 --desc 'edited description' --retries 1
+updated job 'hello'
+
+$ python3 jobsched.py show hello
+Job #1  hello
+  description : edited description
+  command     : echo Hello from the scheduler
+  state       : pending   (last result: -)
+  priority    : 2 (1 = highest)
+  schedule    : manual
+  next run    : -
+  retries     : 0 used of 1 (delay 5s)
+  timeout     : none
+  depends on  : -
+  required by : -
+  created     : 2026-10-17 04:29:42
+
+$ python3 jobsched.py delete hello
+deleted job 'hello' (execution history is kept)
+
+$ python3 jobsched.py load-demo
+added job #20 'backup-docs' (priority 2, cron '0 2 * * *')
+added job #21 'disk-usage-check' (priority 4, every 20s)
+added job #22 'write-timestamp' (priority 6, every 10s)
+
+$ python3 jobsched.py start --until-idle --tick 0.1
+Starting scheduler (Ctrl+C to stop gracefully)...
+[04:30:18] scheduler started: FCFS (first-come first-served, non-preemptive) | workers=1
+[04:30:18] START   'backup-docs' (id 20, priority 2) pid 780, attempt 1
+[04:30:18] SUCCESS 'backup-docs' exit code 0 after 0.11s (active 0.11s, preemptions 0)
+[04:30:18] START   'disk-usage-check' (id 21, priority 4) pid 795, attempt 1
+[04:30:19] SUCCESS 'disk-usage-check' exit code 0 after 0.11s (active 0.11s, preemptions 0)
+[04:30:19] START   'write-timestamp' (id 22, priority 6) pid 801, attempt 1
+[04:30:19] SUCCESS 'write-timestamp' exit code 0 after 0.11s (active 0.11s, preemptions 0)
+[04:30:19] START   'heartbeat' (id 16, priority 5) pid 807, attempt 1
+[04:30:19] SUCCESS 'heartbeat' exit code 0 after 0.10s (active 0.10s, preemptions 0)
+[04:30:19] no more work: scheduler is idle, exiting
+
+$ cat /tmp/jobsched_demo/timestamps.log
+2026-10-17 04:30:19 - timestamp written by Job Scheduler
+
+$ ls /tmp/jobsched_demo/backups
+backup_20261017_043018.tar.gz
+
+
+########## 12. MONITORING, HISTORY, LOGS, FAILURE REPORT ##########
+
+$ python3 jobsched.py status
+==============================================================================
+ JOB SCHEDULER STATUS   2026-10-17 04:30:19   engine: stopped
+==============================================================================
+ pending 6 | running 0 | paused 0 | completed 10 | failed 5   (runs: 30 total, 23 ok, 7 failed)
+
+RUNNING (0)
+  (none)
+
+PENDING (6)
+  ID  NAME              PRI  SCHEDULE                 NEXT RUN                         LAST RESULT  RETRY
+  --  ----------------  ---  -----------------------  -------------------------------  -----------  -----
+  16  heartbeat         5    every 3s                 2026-10-17 04:30:22 (in 2.74s)   success      0/0
+  17  nightly           5    cron '0 2 * * *'         2026-10-18 02:00:00 (in 21h29m)  -            0/0
+  18  weekdays          5    cron '30 9 * * mon-fri'  2026-10-19 09:30:00 (in 52h59m)  -            0/0
+  20  backup-docs       2    cron '0 2 * * *'         2026-10-18 02:00:00 (in 21h29m)  success      0/2
+  21  disk-usage-check  4    every 20s                2026-10-17 04:30:38 (in 19.19s)  success      0/0
+  22  write-timestamp   6    every 10s                2026-10-17 04:30:28 (in 9.19s)   success      0/0
+
+PAUSED (0)
+  (none)
+
+COMPLETED (10)
+  ID  NAME      PRI  SCHEDULE  NEXT RUN  LAST RESULT  RETRY
+  --  --------  ---  --------  --------  -----------  -----
+  2   job-A     5    manual    -         success      0/0
+  3   job-B     1    manual    -         success      0/0
+  4   job-C     3    manual    -         success      0/0
+  5   rr-X      5    manual    -         success      0/0
+  6   rr-Y      5    manual    -         success      0/0
+  7   build     5    manual    -         success      0/0
+  8   test      5    manual    -         success      0/0
+  9   deploy    5    manual    -         success      0/0
+  13  flaky     5    manual    -         success      0/3
+  15  one-shot  5    once      -         success      0/0
+
+FAILED (5)
+  ID  NAME          PRI  SCHEDULE  NEXT RUN  LAST RESULT  RETRY
+  --  ------------  ---  --------  --------  -----------  -----
+  10  fetch-data    5    manual    -         failed       0/0
+  11  process-data  5    manual    -         skipped      0/0
+  12  publish-data  5    manual    -         skipped      0/0
+  14  too-slow      5    manual    -         failed       0/0
+  19  long-task     5    manual    -         killed       0/0
+
+$ python3 jobsched.py history --limit 12
+RUN  JOB               TRY  START                END                  WALL   ACTIVE  EXIT  STATUS
+---  ----------------  ---  -------------------  -------------------  -----  ------  ----  -------
+30   heartbeat         1    2026-10-17 04:30:19  2026-10-17 04:30:19  0.10s  0.10s   0     success
+29   write-timestamp   1    2026-10-17 04:30:19  2026-10-17 04:30:19  0.11s  0.11s   0     success
+28   disk-usage-check  1    2026-10-17 04:30:18  2026-10-17 04:30:19  0.11s  0.11s   0     success
+27   backup-docs       1    2026-10-17 04:30:18  2026-10-17 04:30:18  0.11s  0.11s   0     success
+26   heartbeat         1    2026-10-17 04:30:16  2026-10-17 04:30:16  0.21s  0.21s   0     success
+25   heartbeat         1    2026-10-17 04:30:13  2026-10-17 04:30:13  0.21s  0.21s   0     success
+24   heartbeat         1    2026-10-17 04:30:12  2026-10-17 04:30:12  0.20s  0.20s   0     success
+23   long-task         1    2026-10-17 04:30:09  2026-10-17 04:30:15  6.23s  4.21s   -15   killed
+22   heartbeat         1    2026-10-17 04:30:07  2026-10-17 04:30:07  0.21s  0.21s   0     success
+21   heartbeat         1    2026-10-17 04:30:04  2026-10-17 04:30:04  0.21s  0.21s   0     success
+20   one-shot          1    2026-10-17 04:30:03  2026-10-17 04:30:03  0.21s  0.21s   0     success
+19   heartbeat         1    2026-10-17 04:30:01  2026-10-17 04:30:01  0.21s  0.21s   0     success
+
+$ python3 jobsched.py history --status success --limit 3
+RUN  JOB               TRY  START                END                  WALL   ACTIVE  EXIT  STATUS
+---  ----------------  ---  -------------------  -------------------  -----  ------  ----  -------
+30   heartbeat         1    2026-10-17 04:30:19  2026-10-17 04:30:19  0.10s  0.10s   0     success
+29   write-timestamp   1    2026-10-17 04:30:19  2026-10-17 04:30:19  0.11s  0.11s   0     success
+28   disk-usage-check  1    2026-10-17 04:30:18  2026-10-17 04:30:19  0.11s  0.11s   0     success
+
+$ python3 jobsched.py output 3
+Run #3 of 'job-C' (attempt 1)
+  started   : 2026-10-17 04:29:44   ended: 2026-10-17 04:29:45
+  duration  : wall 1.01s, active 1.01s, preemptions 0
+  pid/exit  : 685 / 0   status: success (exit code 0)
+  ----- output -----
+C
+
+
+$ python3 jobsched.py failures --limit 6
+FAILURE REPORT (newest first)
+==============================================================================
+run #23  job 'long-task'  attempt 1  2026-10-17 04:30:09  [KILLED]
+    reason: terminated on request (killed)
+    | step 3
+    | step 4
+    | step 5
+run #18  job 'too-slow'  attempt 1  2026-10-17 04:29:59  [TIMEOUT]
+    reason: exceeded timeout of 2s of run time
+run #16  job 'flaky'  attempt 2  2026-10-17 04:29:57  [FAILED]
+    reason: exit code 1
+    | flaky.sh: attempt 2 (succeeds on attempt 3)
+    | flaky.sh: simulated failure
+run #15  job 'flaky'  attempt 1  2026-10-17 04:29:56  [FAILED]
+    reason: exit code 1
+    | flaky.sh: attempt 1 (succeeds on attempt 3)
+    | flaky.sh: simulated failure
+run #14  job 'publish-data'  attempt 1  2026-10-17 04:29:56  [SKIPPED]
+    reason: skipped: prerequisite job 'process-data' failed
+run #13  job 'process-data'  attempt 1  2026-10-17 04:29:56  [SKIPPED]
+    reason: skipped: prerequisite job 'fetch-data' failed
+
+$ cat /tmp/jobsched_demo/failures.log   (written by the scheduler)
+2026-10-17 04:29:56 job=fetch-data status=failed detail=exit code 7 after 1 attempt(s)
+    output tail:
+        downloading
+2026-10-17 04:29:56 job=process-data status=skipped detail=skipped: prerequisite job 'fetch-data' failed
+2026-10-17 04:29:56 job=publish-data status=skipped detail=skipped: prerequisite job 'process-data' failed
+2026-10-17 04:30:01 job=too-slow status=timeout detail=exceeded timeout of 2s of run time after 1 attempt(s)
+
+Demo finished.  Data directory: /tmp/jobsched_demo
